@@ -187,16 +187,17 @@ index 97ab41c37b..c15d4c406a 100644
  
  }  // namespace Home
 diff --git a/epsilon/apps/home/controller.cpp b/epsilon/apps/home/controller.cpp
-index 3b79f585f4..8f2c31415d 100644
+index 3b79f585f4..c22fd444de 100644
 --- a/epsilon/apps/home/controller.cpp
 +++ b/epsilon/apps/home/controller.cpp
-@@ -3,10 +3,11 @@
+@@ -3,10 +3,12 @@
  #include <apps/apps_container.h>
  #include <apps/exam_mode_manager.h>
  #include <apps/home/apps_layout.h>
 -#include <ion/keyboard/layout_events.h>
 -#include <poincare/preferences.h>
 +#include <apps/i18n.h>
++#include <ion/display.h>
 +#include <ion/timing.h>
  
  #include "app.h"
@@ -204,7 +205,7 @@ index 3b79f585f4..8f2c31415d 100644
  
  extern "C" {
  #include <assert.h>
-@@ -17,189 +18,94 @@ using namespace Poincare;
+@@ -17,189 +19,114 @@ using namespace Poincare;
  
  namespace Home {
  
@@ -293,6 +294,7 @@ index 3b79f585f4..8f2c31415d 100644
 +  if (s_active == this) {
 +    s_active = nullptr;
 +    WiiU::Shell::setInvalidator(nullptr);
++    WiiU::Shell::setPainter(nullptr);
    }
 -  // Handle keys from 0 to 9
 -  const char* eventTextPtr = event.text();
@@ -336,26 +338,30 @@ index 3b79f585f4..8f2c31415d 100644
 -  if (event.type == ResponderChainEventType::HasBecomeFirst) {
 -    if (selectionDataSource()->selectedRow() == -1) {
 -      selectionDataSource()->selectCellAtLocation(0, 0);
--    }
++void Controller::Paint(WiiU::Rect r) {
++  // Straight to the screen, band by band (transitions)
++  WiiU::Band band;
++  for (int y = r.y; y < r.bottom(); y += WiiU::Band::k_maxHeight) {
++    int h = r.bottom() - y;
++    if (h > WiiU::Band::k_maxHeight) {
++      h = WiiU::Band::k_maxHeight;
+     }
 -    App::app()->setFirstResponder(m_view.selectableTableView());
 -  } else {
 -    ViewController::handleResponderChainEvent(event);
-+void Controller::Invalidate(WiiU::Rect r) {
-+  if (s_active) {
-+    s_active->m_view.invalidate(r);
++    WiiU::Rect area = {r.x, y, r.w, h};
++    band.begin(area);
++    WiiU::Shell::render(band);
++    Ion::Display::pushRect(KDRect(area.x, area.y, area.w, area.h),
++                           band.pixels());
    }
  }
  
 -HighlightCell* Controller::reusableCell(int index) {
 -  assert(0 <= index && index < reusableCellCount());
 -  return &m_reusableCells[index];
-+bool Controller::handleEvent(Ion::Events::Event event) {
-+  bool handled = WiiU::Shell::handleEvent(event);
-+  // Opening an app destroys this controller: it must be the last thing done
-+  launch();
-+  return handled;
- }
- 
+-}
+-
 -void Controller::fillCellForLocation(HighlightCell* cell, int column, int row) {
 -  AppCell* appCell = static_cast<AppCell*>(cell);
 -  AppsContainer* container = AppsContainer::sharedAppsContainer();
@@ -374,16 +380,22 @@ index 3b79f585f4..8f2c31415d 100644
 -          appIdx - container->numberOfBuiltinApps());
 -      appCell->setExternalApp(a);
 -    }
--  }
--}
-+int Controller::framePeriod() { return WiiU::Shell::framePeriod(); }
++void Controller::Invalidate(WiiU::Rect r) {
++  if (s_active) {
++    s_active->m_view.invalidate(r);
+   }
+ }
  
 -int Controller::numberOfIcons() const {
 -  AppsContainer* container = AppsContainer::sharedAppsContainer();
 -  assert(container->numberOfApps() > 0);
 -  return container->numberOfApps() - 1;
--}
-+bool Controller::frame() { return WiiU::Shell::frame(); }
++bool Controller::handleEvent(Ion::Events::Event event) {
++  bool handled = WiiU::Shell::handleEvent(event);
++  // Opening an app destroys this controller: it must be the last thing done
++  launch();
++  return handled;
+ }
  
 -void Controller::tableViewDidChangeSelectionAndDidScroll(
 -    SelectableTableView* t, int previousSelectedCol, int previousSelectedRow,
@@ -398,16 +410,19 @@ index 3b79f585f4..8f2c31415d 100644
 -  if (!withinTemporarySelection && t->selectedRow() == numberOfRows() - 1) {
 -    m_view.reloadBottomRow(this, columnOfLastIcon());
 -  }
+-}
++int Controller::framePeriod() { return WiiU::Shell::framePeriod(); }
+ 
+-SelectableTableViewDataSource* Controller::selectionDataSource() const {
+-  return App::app()->snapshot();
++bool Controller::frame() { return WiiU::Shell::frame(); }
++
 +bool Controller::tick() {
 +  /* Never open an app from here: the run loop is iterating over the timers
 +   * of this app. */
 +  return WiiU::Shell::tick();
  }
  
--SelectableTableViewDataSource* Controller::selectionDataSource() const {
--  return App::app()->snapshot();
--}
--
 -void Controller::switchToSelectedApp() {
 +void Controller::launch() {
 +  WiiU::Item item = WiiU::Shell::takeLaunch();
@@ -426,6 +441,7 @@ index 3b79f585f4..8f2c31415d 100644
 -      container->switchToBuiltinApp(selectedSnapshot);
 +  if (item.kind == WiiU::Item::Kind::External) {
 +    if (ExamModeManager::ExamMode().ruleset() != ExamMode::Ruleset::Off) {
++      WiiU::Shell::launchFailed();
 +      return;
      }
 +    WiiU::Shell::leave();
@@ -435,6 +451,7 @@ index 3b79f585f4..8f2c31415d 100644
 +  ::App::Snapshot* snapshot =
 +      container->appSnapshotAtIndex(PermutedAppSnapshotIndex(item.index));
 +  if (appIsForbidden(snapshot->descriptor()->name())) {
++    WiiU::Shell::launchFailed();
 +    App::app()->displayWarning(forbiddenAppMessage());
 +    return;
 +  }
@@ -446,6 +463,7 @@ index 3b79f585f4..8f2c31415d 100644
 +  if (event.type == ResponderChainEventType::HasBecomeFirst) {
 +    s_active = this;
 +    WiiU::Shell::setInvalidator(Invalidate);
++    WiiU::Shell::setPainter(Paint);
 +    WiiU::Shell::enter();
 +    m_view.invalidate(WiiU::k_screen);
    } else {
@@ -459,10 +477,10 @@ index 3b79f585f4..8f2c31415d 100644
  }
  
 diff --git a/epsilon/apps/home/controller.h b/epsilon/apps/home/controller.h
-index 7e1e98eb57..741795e936 100644
+index 7e1e98eb57..9df86f7cba 100644
 --- a/epsilon/apps/home/controller.h
 +++ b/epsilon/apps/home/controller.h
-@@ -1,102 +1,51 @@
+@@ -1,102 +1,52 @@
  #pragma once
  
 -#include <escher/regular_table_view_data_source.h>
@@ -579,6 +597,7 @@ index 7e1e98eb57..741795e936 100644
 -  constexpr static int k_cellWidth = 104;
 +
 +  static void Invalidate(WiiU::Rect r);
++  static void Paint(WiiU::Rect r);
 +  void launch();
 +  bool appIsForbidden(I18n::Message appName) const;
 +  I18n::Message forbiddenAppMessage() const;
@@ -3518,10 +3537,10 @@ index 0000000000..44e6e448e3
 +    main()
 diff --git a/epsilon/apps/home/wiiu/gfx.cpp b/epsilon/apps/home/wiiu/gfx.cpp
 new file mode 100644
-index 0000000000..9f695b2df0
+index 0000000000..9525889025
 --- /dev/null
 +++ b/epsilon/apps/home/wiiu/gfx.cpp
-@@ -0,0 +1,549 @@
+@@ -0,0 +1,573 @@
 +#include "gfx.h"
 +
 +#include <kandinsky/context.h>
@@ -3655,7 +3674,8 @@ index 0000000000..9f695b2df0
 +}
 +
 +/* Coverage (0..256) of the pixel (px, py) of a rounded rectangle, 0 outside.
-+ * Only the corners are curved; they are antialiased on one pixel. */
++ * Only the corners are curved; they are antialiased on one pixel. No square
++ * root: near the edge, r - d is about (r^2 - d^2) / 2r. */
 +static int roundCoverage(const Rect& r, int radius, int px, int py) {
 +  int cx, cy;
 +  if (px < r.x + radius) {
@@ -3672,18 +3692,20 @@ index 0000000000..9f695b2df0
 +  } else {
 +    return 256;
 +  }
-+  // Distance in 1/16 pixel from the corner centre
-+  float dx = (px - cx) + (px < cx ? 0.5f : -0.5f);
-+  float dy = (py - cy) + (py < cy ? 0.5f : -0.5f);
-+  float d = sqrtf(dx * dx + dy * dy);
-+  float edge = radius + 0.5f - d;
-+  if (edge >= 1.f) {
-+    return 256;
-+  }
-+  if (edge <= 0.f) {
++  // In half pixels, from the corner centre
++  int dx = 2 * (px - cx) + (px < cx ? 1 : -1);
++  int dy = 2 * (py - cy) + (py < cy ? 1 : -1);
++  int d2 = dx * dx + dy * dy;  // (2d)^2
++  int r2 = 2 * radius + 1;     // 2 (r + 0.5)
++  int outer = r2 * r2;
++  if (d2 >= outer) {
 +    return 0;
 +  }
-+  return static_cast<int>(edge * 256);
++  int inner = (r2 - 2) * (r2 - 2);  // 2 (r - 0.5)
++  if (d2 <= inner) {
++    return 256;
++  }
++  return (outer - d2) * 256 / (outer - inner);
 +}
 +
 +void roundFill(Band& b, Rect r, int radius, KDColor c, int alpha) {
@@ -3720,7 +3742,23 @@ index 0000000000..9f695b2df0
 +  int innerRadius = radius > 1 ? radius - 1 : 0;
 +  for (int y = z.y; y < z.bottom(); y++) {
 +    KDColor* row = b.row(y);
++    bool cornerRow = y < r.y + radius || y >= r.bottom() - radius;
++    if (!cornerRow) {
++      // Straight sides: one pixel on each side
++      if (r.x >= z.x) {
++        blendPixel(row + r.x, c, alpha);
++      }
++      if (r.right() - 1 < z.right()) {
++        blendPixel(row + r.right() - 1, c, alpha);
++      }
++      continue;
++    }
 +    for (int x = z.x; x < z.right(); x++) {
++      bool edgeRow = y == r.y || y == r.bottom() - 1;
++      bool inCorner = x < r.x + radius || x >= r.right() - radius;
++      if (!edgeRow && !inCorner) {
++        continue;
++      }
 +      int outer = roundCoverage(r, radius, x, y);
 +      if (outer == 0) {
 +        continue;
@@ -3736,10 +3774,8 @@ index 0000000000..9f695b2df0
 +}
 +
 +void shadow(Band& b, Rect r, int radius, int strength) {
-+  for (int i = 3; i >= 1; i--) {
-+    Rect s = {r.x - i + 1, r.y - i + 3, r.w + 2 * i - 2, r.h + 2 * i - 2};
-+    roundFill(b, s, radius + i, KDBlack, strength / (i + 1));
-+  }
++  roundFill(b, {r.x - 1, r.y + 2, r.w + 2, r.h + 1}, radius + 1, KDBlack,
++            strength / 3);
 +}
 +
 +void image(Band& b, int icon, int x, int y, int size, int alpha) {
@@ -3751,13 +3787,15 @@ index 0000000000..9f695b2df0
 +  if (z.isEmpty() || alpha <= 0) {
 +    return;
 +  }
++  int step = (w << 16) / dw;
 +  for (int yy = z.y; yy < z.bottom(); yy++) {
 +    KDColor* row = b.row(yy);
 +    int sy = (yy - y) * h / dh;
 +    const uint16_t* colors = im.colors + sy * w;
 +    const uint8_t* alphas = im.alphas + sy * w;
-+    for (int xx = z.x; xx < z.right(); xx++) {
-+      int sx = (xx - x) * w / dw;
++    int fx = (z.x - x) * step;
++    for (int xx = z.x; xx < z.right(); xx++, fx += step) {
++      int sx = fx >> 16;
 +      int a = alphas[sx];
 +      if (a) {
 +        blendPixel(row + xx, KDColor::RGB16(colors[sx]),
@@ -3794,17 +3832,22 @@ index 0000000000..9f695b2df0
 +  if (z.isEmpty() || alpha <= 0) {
 +    return;
 +  }
-+  // Coverage from the normalised distance, antialiased on about one pixel
++  /* Coverage from the normalised squared distance: near the edge,
++   * 1 - d is about (1 - d^2) / 2, antialiased on about one pixel. */
 +  float rx = r.w / 2.f, ry = r.h / 2.f;
 +  float cx = r.x + rx, cy = r.y + ry;
-+  float aa = 1.f / (rx < ry ? rx : ry);
++  float scale = (rx < ry ? rx : ry) / 2.f;  // 1 - d^2 -> pixels
++  float irx = 1.f / rx, iry = 1.f / ry;
 +  for (int y = z.y; y < z.bottom(); y++) {
 +    KDColor* row = b.row(y);
-+    float dy = (y + 0.5f - cy) / ry;
++    float dy = (y + 0.5f - cy) * iry;
++    float dy2 = dy * dy;
++    if (dy2 >= 1.f + 1.f / scale) {
++      continue;
++    }
 +    for (int x = z.x; x < z.right(); x++) {
-+      float dx = (x + 0.5f - cx) / rx;
-+      float d = sqrtf(dx * dx + dy * dy);
-+      float edge = (1.f - d) / aa + 0.5f;
++      float dx = (x + 0.5f - cx) * irx;
++      float edge = (1.f - dx * dx - dy2) * scale + 0.5f;
 +      if (edge <= 0.f) {
 +        continue;
 +      }
@@ -4483,10 +4526,10 @@ index 0000000000..f47b66f295
 +}  // namespace Home
 diff --git a/epsilon/apps/home/wiiu/shell.cpp b/epsilon/apps/home/wiiu/shell.cpp
 new file mode 100644
-index 0000000000..e89f212e6c
+index 0000000000..2cf6f1baee
 --- /dev/null
 +++ b/epsilon/apps/home/wiiu/shell.cpp
-@@ -0,0 +1,1571 @@
+@@ -0,0 +1,1725 @@
 +/* Wii U-OS: the Wii U menu on the NumWorks home screen.
 + *
 + * Boot ("Wii U" logo, then the Health and Safety screen), the menu (a grid of
@@ -4530,6 +4573,10 @@ index 0000000000..e89f212e6c
 +namespace {
 +
 +void (*s_invalidator)(Rect) = nullptr;
++void (*s_painter)(Rect) = nullptr;
++// Loading screen (the app's icon) shown while a calculator app or game opens
++bool s_loading = false;
++Slot s_loadingSlot = {Slot::Kind::Empty, 0};
 +Item s_launch = k_noItem;
 +bool s_fakeClock = false;
 +uint32_t s_fakeNow = 0;
@@ -4831,17 +4878,42 @@ index 0000000000..e89f212e6c
 +  }
 +}
 +
-+void drawPageDots(Band& b) {
++const char* focusLabel() {
++  if (s.focus == Focus::Avatar) {
++    return s.me.name;
++  }
++  if (s.focus == Focus::Dock) {
++    return appletTitle(k_dock[s.dock]);
++  }
++  Slot slot = s.slots[s.selected];
++  return slot.isEmpty() || s.moving ? "" : slotLabel(slot);
++}
++
++constexpr Rect k_titleArea = {36, 0, k_screenWidth - 72, 30};
++
++// The name of the selection in a pill at the top, the page dots under it
++void drawTitle(Band& b) {
++  if (!k_titleArea.intersects(b.clip())) {
++    return;
++  }
++  const char* label = focusLabel();
++  if (label[0]) {
++    int w = textWidth(label) + 16;
++    w = w > k_titleArea.w ? k_titleArea.w : w;
++    Rect pill = {k_screenWidth / 2 - w / 2, 2, w, 17};
++    roundFill(b, pill.translated(0, 1), 8, rgb(0x000000), 30);
++    roundFill(b, pill, 8, s.background == 2 ? rgb(0x2A3038) : rgb(0xFFFFFF));
++    text(b, label, k_screenWidth / 2, pill.y + 1, ink(), Small, Align::Center,
++         w - 8);
++  }
 +  int pages = numberOfPages();
 +  int page = currentPage();
-+  int total = pages * 12 - 4;
++  int total = pages * 10 - 4;
 +  int x = k_screenWidth / 2 - total / 2;
 +  for (int i = 0; i < pages; i++) {
-+    bool on = i == page && s.focus == Focus::Grid;
-+    on = on || (i == page && s.focus != Focus::Grid);
-+    roundFill(b, {x + i * 12, 9, 8, 8}, 2,
-+              on ? accent() : (s.background == 2 ? rgb(0x5A606A)
-+                                                 : rgb(0xC9CED3)));
++    roundFill(b, {x + i * 10, 23, 6, 5}, 2,
++              i == page ? accent()
++                        : (s.background == 2 ? rgb(0x5A606A) : rgb(0xC9CED3)));
 +  }
 +}
 +
@@ -4849,7 +4921,6 @@ index 0000000000..e89f212e6c
 +  Rect r = k_avatarRect;
 +  bool selected = s.focus == Focus::Avatar && s.screen == Screen::Menu;
 +  if (selected) {
-+    roundFill(b, r.inset(-3), 9, mix(0xFFFFFF, 0, 0));
 +    roundFill(b, r.inset(-3), 9,
 +              KDColor::Blend(accentLight(), accent(),
 +                             static_cast<uint8_t>(255 * pulse())));
@@ -4868,15 +4939,12 @@ index 0000000000..e89f212e6c
 +                            s.notifications.unread);
 +    text(b, n, r.right(), r.y - 4, rgb(0xFFFFFF), Small, Align::Center);
 +  }
-+  if (selected) {
-+    text(b, s.me.name, r.right() + 6, r.y + 7, ink());
-+  }
 +}
 +
 +void drawArrow(Band& b, bool right) {
 +  const WiiUIcons::Image& im = WiiUIcons::k_images[WiiUIcons::IconArrow];
 +  int y = k_gridY + k_tileStepY + k_tileSize / 2 - im.height / 2;
-+  int alpha = 170 + static_cast<int>(70 * pulse());
++  int alpha = 230;
 +  if (right) {
 +    tinted(b, WiiUIcons::IconArrow, k_screenWidth - im.width - 1, y + 1,
 +           rgb(0xA9B2B9), 200);
@@ -4904,18 +4972,11 @@ index 0000000000..e89f212e6c
 +  }
 +}
 +
-+Rect selectionFrame(int index, const char* label) {
-+  Rect r = tileRect(index);
-+  int w = textWidth(label) + 12;
-+  int fw = w > r.w + 8 ? w : r.w + 8;
-+  int fx = r.x + r.w / 2 - fw / 2;
-+  if (fx < 2) {
-+    fx = 2;
-+  }
-+  if (fx + fw > k_screenWidth - 2) {
-+    fx = k_screenWidth - 2 - fw;
-+  }
-+  return {fx, r.y - 4, fw, r.h + 8 + 15};
++Rect selectionFrame(int index) { return tileRect(index).inset(-5); }
++
++KDColor glowColor() {
++  return KDColor::Blend(accentLight(), accent(),
++                        static_cast<uint8_t>(120 * pulse()));
 +}
 +
 +void drawSelection(Band& b) {
@@ -4932,25 +4993,26 @@ index 0000000000..e89f212e6c
 +    drawTile(b, lifted, slot, 256, true);
 +    return;
 +  }
-+  const char* label = slot.isEmpty() ? "" : slotLabel(slot);
-+  Rect f = selectionFrame(s.selected, label);
-+  if (!f.inset(-4).intersects(b.clip())) {
++  Rect f = selectionFrame(s.selected);
++  if (!f.inset(-2).intersects(b.clip())) {
 +    return;
 +  }
-+  KDColor c = KDColor::Blend(accentLight(), accent(),
-+                             static_cast<uint8_t>(110 * pulse()));
-+  shadow(b, f, 10, 70);
-+  roundFill(b, f, 10, c);
-+  roundFill(b, {f.x + 2, f.y + 2, f.w - 4, 12}, 6, rgb(0xFFFFFF), 50);
-+  drawTile(b, r, slot, 256, false);
-+  if (!slot.isEmpty()) {
-+    text(b, label, f.x + f.w / 2, r.bottom() + 3, rgb(0xFFFFFF), Small,
-+         Align::Center, f.w - 6);
++  if (slot.isEmpty()) {
++    // An empty place: just the outline
++    roundFrame(b, f, 12, glowColor());
++    roundFrame(b, f.inset(1), 11, glowColor());
++    roundFrame(b, f.inset(2), 10, glowColor(), 140);
++    return;
 +  }
++  shadow(b, f, 12, 90);
++  roundFill(b, f, 12, glowColor());
++  roundFill(b, {f.x + 2, f.y + 2, f.w - 4, f.h / 2 - 2}, 10, rgb(0xFFFFFF),
++            60);
++  drawTile(b, r, slot, 256, false);
 +}
 +
 +void drawDock(Band& b) {
-+  if (!Rect{0, k_dockY - 22, k_screenWidth, k_screenHeight}.intersects(
++  if (!Rect{0, k_dockY - 4, k_screenWidth, k_screenHeight}.intersects(
 +          b.clip())) {
 +    return;
 +  }
@@ -4968,9 +5030,7 @@ index 0000000000..e89f212e6c
 +                    s.screen == Screen::Menu;
 +    if (selected) {
 +      Rect f = {x - 5, y - 5, k_dockIcon + 10, k_dockIcon + 10};
-+      roundFill(b, f, 8,
-+                KDColor::Blend(accentLight(), accent(),
-+                               static_cast<uint8_t>(110 * pulse())));
++      roundFill(b, f, 8, glowColor());
 +      roundFill(b, f.inset(3), 6, rgb(0xFFFFFF));
 +    }
 +    image(b, k_dockIcons[i], x, y);
@@ -4978,21 +5038,11 @@ index 0000000000..e89f212e6c
 +      disc(b, x + k_dockIcon - 1, y + 1, 5, rgb(0xFF8A1F));
 +    }
 +  }
-+  if (s.focus == Focus::Dock && s.screen == Screen::Menu) {
-+    const char* label = appletTitle(k_dock[s.dock]);
-+    int w = textWidth(label) + 12;
-+    int cx = dockX(s.dock) + k_dockIcon / 2;
-+    int x = cx - w / 2;
-+    x = x < 2 ? 2 : (x + w > k_screenWidth - 2 ? k_screenWidth - 2 - w : x);
-+    Rect tip = {x, k_dockY - 22, w, 17};
-+    roundFill(b, tip, 8, rgb(0x3A3F45), 235);
-+    text(b, label, x + w / 2, tip.y + 2, rgb(0xFFFFFF), Small, Align::Center);
-+  }
 +}
 +
 +void drawMenu(Band& b) {
 +  background(b);
-+  drawPageDots(b);
++  drawTitle(b);
 +  drawAvatar(b);
 +  int first = static_cast<int>(floorf(s.scroll));
 +  for (int page = first; page <= first + 1 && page < k_maxPages; page++) {
@@ -5088,14 +5138,24 @@ index 0000000000..e89f212e6c
 +}
 +
 +void openMenu() {
-+  setScreen(Screen::Menu);
++  s.screen = Screen::Menu;
++  s.screenStart = now();
 +  s.introStart = now();
++  invalidateAll();
 +}
 +
 +void selectInGrid(int index) {
++  bool samePage = s.focus == Focus::Grid && pageOf(index) == currentPage() &&
++                  !s.moving;
++  if (samePage) {
++    invalidate(selectionFrame(s.selected).inset(-3));
++    invalidate(selectionFrame(index).inset(-3));
++    invalidate(k_titleArea);
++  } else {
++    invalidateAll();
++  }
 +  s.selected = index;
 +  s.focus = Focus::Grid;
-+  invalidateAll();
 +}
 +
 +int nearestColumnFromX(int x) {
@@ -5361,26 +5421,33 @@ index 0000000000..e89f212e6c
 +  return k_backgroundNames[i % k_numberOfBackgrounds];
 +}
 +
-+void background(Band& b) {
-+  Rect r = b.area();
-+  if (s.background == 1) {
-+    vgradient(b, {0, 0, k_screenWidth, k_screenHeight}, rgb(0xE4F6FF),
-+              rgb(0x9ED6F2));
-+  } else if (s.background == 2) {
-+    vgradient(b, {0, 0, k_screenWidth, k_screenHeight}, rgb(0x3A4250),
-+              rgb(0x1A1E26));
-+  } else {
-+    vgradient(b, {0, 0, k_screenWidth, k_screenHeight}, rgb(0xFAFBFC),
-+              rgb(0xE2E6E9));
++static void softShape(Band& b, int cx, int cy, int rx, int ry, KDColor c,
++                      int alpha) {
++  const Rect& clip = b.clip();
++  int y0 = cy - ry > clip.y ? cy - ry : clip.y;
++  int y1 = cy + ry < clip.bottom() ? cy + ry : clip.bottom();
++  for (int y = y0; y < y1; y++) {
++    float dy = (y + 0.5f - cy) / ry;
++    int hw = static_cast<int>(rx * sqrtf(1.f - dy * dy));
++    // Fading edges: a wider, lighter span under the shape
++    fill(b, {cx - hw - 6, y, 2 * hw + 12, 1}, c, alpha / 3);
++    fill(b, {cx - hw, y, 2 * hw, 1}, c, alpha);
 +  }
-+  // Soft blurred shapes, like the faint pictures behind the Wii U menu
++}
++
++void background(Band& b) {
++  if (s.background == 1) {
++    vgradient(b, k_screen, rgb(0xE4F6FF), rgb(0x9ED6F2));
++  } else if (s.background == 2) {
++    vgradient(b, k_screen, rgb(0x3A4250), rgb(0x1A1E26));
++  } else {
++    vgradient(b, k_screen, rgb(0xFAFBFC), rgb(0xE2E6E9));
++  }
++  // Soft shapes, like the faint pictures behind the Wii U menu
 +  KDColor glow = s.background == 2 ? rgb(0x6A7486) : rgb(0xFFFFFF);
-+  int a = s.background == 2 ? 40 : 150;
-+  ellipse(b, {-40, 120, 170, 110}, glow, a);
-+  ellipse(b, {200, -30, 160, 120}, glow, a);
-+  ellipse(b, {120, 70, 120, 90}, s.background == 2 ? glow : rgb(0xD5DADF),
-+          s.background == 2 ? 25 : 60);
-+  (void)r;
++  int a = s.background == 2 ? 30 : 120;
++  softShape(b, 45, 175, 85, 55, glow, a);
++  softShape(b, 280, 30, 80, 60, glow, a);
 +}
 +
 +const char* slotLabel(Slot slot) {
@@ -5611,6 +5678,107 @@ index 0000000000..e89f212e6c
 +  a.runningSince = now() == 0 ? 1 : now();
 +}
 +
++/* ---------------------------------------------------------- transitions */
++
++namespace {
++
++void paint(Rect r) {
++  r = r.intersection(k_screen);
++  if (s_painter && !r.isEmpty()) {
++    s_painter(r);
++  }
++}
++
++// The part of outer that is not in inner (inner is inside outer)
++void paintBetween(Rect inner, Rect outer) {
++  paint({outer.x, outer.y, outer.w, inner.y - outer.y});
++  paint({outer.x, inner.bottom(), outer.w, outer.bottom() - inner.bottom()});
++  paint({outer.x, inner.y, inner.x - outer.x, inner.h});
++  paint({inner.right(), inner.y, outer.right() - inner.right(), inner.h});
++}
++
++Rect lerpRect(Rect a, Rect b, int t) {
++  return {a.x + (b.x - a.x) * t / 256, a.y + (b.y - a.y) * t / 256,
++          a.w + (b.w - a.w) * t / 256, a.h + (b.h - a.h) * t / 256};
++}
++
++constexpr int k_transitionSteps = 8;
++constexpr int k_transitionStepMs = 26;
++
++int easeOut(int i) {
++  int u = 256 - i * 256 / k_transitionSteps;
++  return 256 - u * u / 256;
++}
++
++bool transitionsEnabled() { return s_painter != nullptr && !s_fakeClock; }
++
++void waitStep(uint32_t start, int i) {
++  uint32_t target = start + i * k_transitionStepMs;
++  while (static_cast<uint32_t>(Ion::Timing::millis()) < target) {
++    Ion::Timing::msleep(1);
++  }
++}
++
++/* The new screen grows out of from, like a window opening (only the new
++ * ring is drawn at each step) */
++void zoomOpen(Rect from) {
++  Rect prev = from.intersection(k_screen);
++  paint(prev);
++  uint32_t start = Ion::Timing::millis();
++  for (int i = 1; i <= k_transitionSteps; i++) {
++    Rect r = lerpRect(from, k_screen, easeOut(i)).intersection(k_screen);
++    paintBetween(prev, r);
++    prev = r;
++    waitStep(start, i);
++  }
++}
++
++// The old screen shrinks into to, the new one appears around it
++void zoomClose(Rect to) {
++  Rect prev = k_screen;
++  uint32_t start = Ion::Timing::millis();
++  for (int i = 1; i <= k_transitionSteps; i++) {
++    Rect r = lerpRect(k_screen, to, easeOut(i)).intersection(k_screen);
++    paintBetween(r, prev);
++    prev = r;
++    waitStep(start, i);
++  }
++  paint(prev);
++}
++
++// Where the selection is in the menu, for the transitions
++Rect focusRect() {
++  if (s.screen != Screen::Menu && s.screen != Screen::App) {
++    return {150, 110, 20, 20};
++  }
++  switch (s.focus) {
++    case Focus::Avatar:
++      return k_avatarRect;
++    case Focus::Dock:
++      return {dockX(s.dock), k_dockY + 6, k_dockIcon, k_dockIcon};
++    default: {
++      Rect r = tileRect(s.selected);
++      return r.x < 0 || r.right() > k_screenWidth ? Rect{150, 110, 20, 20} : r;
++    }
++  }
++}
++
++void drawLoading(Band& b) {
++  vgradient(b, k_screen, rgb(0xFFFFFF), rgb(0xE6EAED));
++  Rect tile = {160 - 40, 76, 80, 80};
++  shadow(b, tile, 14, 80);
++  roundFill(b, tile, 14, rgb(0xFFFFFF));
++  roundFrame(b, tile, 14, rgb(0xD3D8DC));
++  drawSlotArt(b, s_loadingSlot, tile.x + 8, tile.y + 8, 64);
++  text(b, slotLabel(s_loadingSlot), 160, 170, rgb(0x4A4F55), Large,
++       Align::Center);
++  for (int i = 0; i < 3; i++) {
++    disc(b, 148 + i * 12, 202, 3, accent(), 120 + i * 60);
++  }
++}
++
++}  // namespace
++
 +void openApplet(Applet a) {
 +  if (Apps::appletLocked(a) && !Apps::consumeUnlock()) {
 +    Apps::askPin({Slot::Kind::Applet, static_cast<int8_t>(a)}, true,
@@ -5621,12 +5789,21 @@ index 0000000000..e89f212e6c
 +  if (a != Applet::Activity) {
 +    activityStart(appletSlot(a));
 +  }
++  Rect from = focusRect();
++  if (s.screen == Screen::App || s.parental.asking) {
++    from = {150, 110, 20, 20};
++  }
 +  s.applet = a;
 +  s.appletStart = now();
 +  s.screen = Screen::App;
 +  s.screenStart = now();
++  s.parental.asking = false;
 +  Apps::enter(a);
-+  invalidateAll();
++  if (transitionsEnabled()) {
++    zoomOpen(from);
++  } else {
++    invalidateAll();
++  }
 +}
 +
 +void closeApplet() {
@@ -5634,7 +5811,11 @@ index 0000000000..e89f212e6c
 +  activityStop();
 +  s.screen = Screen::Menu;
 +  s.screenStart = now();
-+  invalidateAll();
++  if (transitionsEnabled()) {
++    zoomClose(focusRect());
++  } else {
++    invalidateAll();
++  }
 +}
 +
 +void launchSlot(Slot slot) {
@@ -5648,6 +5829,14 @@ index 0000000000..e89f212e6c
 +    return;
 +  }
 +  activityStart(slot);
++  // The tile grows into the loading screen, then the app opens
++  if (transitionsEnabled()) {
++    Rect from = s.screen == Screen::Menu ? focusRect() : Rect{150, 110, 20, 20};
++    s.parental.asking = false;
++    s_loading = true;
++    s_loadingSlot = slot;
++    zoomOpen(from);
++  }
 +  s_launch = {slot.kind == Slot::Kind::Builtin ? Item::Kind::Builtin
 +                                               : Item::Kind::External,
 +              slot.index};
@@ -5659,7 +5848,16 @@ index 0000000000..e89f212e6c
 +
 +void setInvalidator(void (*f)(Rect)) { s_invalidator = f; }
 +
++void setPainter(void (*f)(Rect)) { s_painter = f; }
++
++void launchFailed() {
++  s_loading = false;
++  activityStop();
++  invalidateAll();
++}
++
 +void enter() {
++  s_loading = false;
 +  listApps();
 +  if (!s.initialized) {
 +    firstStart();
@@ -5755,6 +5953,11 @@ index 0000000000..e89f212e6c
 +  return false;
 +}
 +
++static bool menuAnimating() {
++  float d = s.scroll - currentPage();
++  return d > 0.002f || d < -0.002f || introRunning() || s.moving;
++}
++
 +int framePeriod() {
 +  switch (s.screen) {
 +    case Screen::Boot:
@@ -5762,7 +5965,7 @@ index 0000000000..e89f212e6c
 +    case Screen::Health:
 +      return 60;
 +    case Screen::Menu:
-+      return 40;
++      return menuAnimating() ? 40 : 80;
 +    case Screen::App:
 +      return Apps::animated(s.applet) ? 40 : 0;
 +  }
@@ -5772,7 +5975,7 @@ index 0000000000..e89f212e6c
 +static bool approach(float* value, float target) {
 +  float d = target - *value;
 +  if (d > 0.002f || d < -0.002f) {
-+    *value += d * 0.3f;
++    *value += d * 0.38f;
 +    return true;
 +  }
 +  *value = target;
@@ -5797,23 +6000,13 @@ index 0000000000..e89f212e6c
 +        invalidateAll();
 +        return true;
 +      }
-+      // Glow of the selection
++      // Glow of the selection only
 +      if (s.focus == Focus::Grid) {
-+        Slot slot = s.slots[s.selected];
-+        Rect f = selectionFrame(s.selected,
-+                                slot.isEmpty() ? "" : slotLabel(slot));
-+        invalidate(f.inset(-4));
++        invalidate(selectionFrame(s.selected).inset(-2));
 +      } else if (s.focus == Focus::Dock) {
 +        invalidate({dockX(s.dock) - 6, k_dockY, k_dockIcon + 12, 36});
 +      } else {
 +        invalidate(k_avatarRect.inset(-4));
-+      }
-+      int page = currentPage();
-+      if (page + 1 < numberOfPages()) {
-+        invalidate({k_screenWidth - 26, 70, 26, 50});
-+      }
-+      if (page > 0) {
-+        invalidate({0, 70, 26, 50});
 +      }
 +      return true;
 +    }
@@ -5824,6 +6017,10 @@ index 0000000000..e89f212e6c
 +}
 +
 +void render(Band& b) {
++  if (s_loading) {
++    drawLoading(b);
++    return;
++  }
 +  switch (s.screen) {
 +    case Screen::Boot:
 +      drawBoot(b);
@@ -6060,10 +6257,10 @@ index 0000000000..e89f212e6c
 +}  // namespace Home
 diff --git a/epsilon/apps/home/wiiu/shell.h b/epsilon/apps/home/wiiu/shell.h
 new file mode 100644
-index 0000000000..12c7cd554d
+index 0000000000..3f1fac879a
 --- /dev/null
 +++ b/epsilon/apps/home/wiiu/shell.h
-@@ -0,0 +1,48 @@
+@@ -0,0 +1,53 @@
 +#pragma once
 +
 +#include <ion/events.h>
@@ -6107,6 +6304,11 @@ index 0000000000..12c7cd554d
 +Item takeLaunch();
 +// Where invalidated rectangles go (the home view)
 +void setInvalidator(void (*invalidate)(Rect));
++/* Draws a rectangle of the screen right away (transitions between screens,
++ * which run inside one event) */
++void setPainter(void (*paint)(Rect));
++// The app returned by takeLaunch could not be opened (exam mode...)
++void launchFailed();
 +
 +}  // namespace Shell
 +

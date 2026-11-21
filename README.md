@@ -22,9 +22,13 @@ journal d'activité.
   sécurité** (« Appuie sur OK pour continuer »), puis les tuiles qui
   apparaissent une à une.
 - **Les tuiles** : 5 × 3 tuiles par page, plusieurs pages (les points en
-  haut), flèches sur les côtés. La tuile choisie s'entoure de **cyan** et
-  affiche son nom, comme le « Start » de la console. Ton premier jeu prend
-  la place du disque, en haut à gauche.
+  haut), flèches sur les côtés. La tuile choisie s'entoure d'un cadre
+  **cyan** qui brille, et son nom s'affiche en haut de l'écran. Ton premier
+  jeu prend la place du disque, en haut à gauche.
+- **Animations** : les pages glissent, les tuiles apparaissent une à une,
+  chaque appli s'ouvre en zoomant depuis sa tuile et se referme en zoomant
+  vers elle, et les applis de la calculatrice et les jeux passent par un
+  écran de chargement avec leur icône.
 - **Déplacer les tuiles** : **Boîte à outils** prend la tuile, les flèches la
   promènent (même vers une autre page), **OK** la pose. Ton menu reste rangé
   comme tu l'as laissé.
