@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Builds Wii U-OS (a Wii U menu style userland for the NumWorks n0120) on YOUR
+# Builds Wii U-OS (a Wii U menu style userland for the NumWorks n0110, n0115 and n0120) on YOUR
 # machine, from NumWorks' official sources.
 #
 #   1. downloads Epsilon from github.com/numworks/epsilon at the pinned commit
 #   2. applies patches/wiiu-os-epsilon.patch (desktop, windows, apps, and
 #      the fix for the Home / On-Off crash)
-#   3. compiles the userland for slot B (n0120, third-party apps allowed)
+#   3. compiles the userland for slot B of the n0120, n0115 and n0110
+#      (third-party apps allowed); MODELS=n0120 to build only one
 #   4. fills installer/ with what the one-click installer needs:
-#        installer/firmware/  wiiu-os.B.dfu + wiiu-os.B.elf (symbols)
+#        installer/firmware/  wiiu-os.<model>.B.dfu + wiiu-os.<model>.B.elf (symbols)
 #        installer/numworks/  NumWorks' dfu.py, and the EADK runtime to link
 #                             .nwa games at their address in slot B
 #   5. if games/ holds .nwa games, copies them to installer/games/ and
@@ -24,7 +25,7 @@ SRC="$ROOT/firmware"
 VENV="$ROOT/.venv"
 OUT="$ROOT/installer"
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
-MODEL=n0120
+MODELS="${MODELS:-n0120 n0115 n0110}"  # NumWorks models to build for
 
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
@@ -58,38 +59,46 @@ say "3/5  Environnement Python de compilation"
 ln -sfn "$VENV" "$SRC/.venv"
 ln -sfn ../.venv "$SRC/epsilon/.venv"
 
-say "4/5  Compilation de Wii U-OS ($MODEL, slot B) : quelques minutes"
-PATH="$VENV/bin:$PATH" "$MAKE_BIN" -C "$SRC/epsilon" PLATFORM="$MODEL" \
-  PYTHON="$VENV/bin/python3" -j"$JOBS" userland.allow3rdparty.B.dfu >"$ROOT/.build.log" 2>&1 \
-  || { tail -30 "$ROOT/.build.log"; echo "Échec, voir .build.log"; exit 1; }
-
-BUILD="$SRC/epsilon/output/release/$MODEL"
+say "4/5  Compilation de Wii U-OS ($MODELS, slot B) : quelques minutes par modèle"
 mkdir -p "$OUT/firmware" "$OUT/numworks/eadk" "$OUT/games"
-cp "$BUILD/userland.allow3rdparty.B.dfu" "$OUT/firmware/wiiu-os.B.dfu"
-arm-none-eabi-strip --strip-debug -o "$OUT/firmware/wiiu-os.B.elf" "$BUILD/userland.allow3rdparty.B.elf"
+rm -f "$OUT"/firmware/*.dfu "$OUT"/firmware/*.elf
+for MODEL in $MODELS; do
+  echo "   - $MODEL"
+  PATH="$VENV/bin:$PATH" "$MAKE_BIN" -C "$SRC/epsilon" PLATFORM="$MODEL" \
+    PYTHON="$VENV/bin/python3" -j"$JOBS" userland.allow3rdparty.B.dfu >"$ROOT/.build.log" 2>&1 \
+    || { tail -30 "$ROOT/.build.log"; echo "Échec ($MODEL), voir .build.log"; exit 1; }
+  BUILD="$SRC/epsilon/output/release/$MODEL"
+  cp "$BUILD/userland.allow3rdparty.B.dfu" "$OUT/firmware/wiiu-os.$MODEL.B.dfu"
+  arm-none-eabi-strip --strip-debug -o "$OUT/firmware/wiiu-os.$MODEL.B.elf" "$BUILD/userland.allow3rdparty.B.elf"
+done
 
 # NumWorks' DFU tool and the pyusb copy it ships with
 cp "$SRC/epsilon/tools/device/dfu.py" "$OUT/numworks/dfu.py"
 rm -rf "$OUT/numworks/usb"
 cp -R "$SRC/epsilon/tools/device/usb" "$OUT/numworks/usb"
 
-# EADK runtime for the games, as one relocatable object + its linker script
+# EADK runtime for the games, as one relocatable object per CPU family
+# (m7h: n0120, double precision FPU; m7f: n0110 and n0115) + its linker script
 EADK="$SRC/epsilon/eadk"
 TMP="$(mktemp -d)"
-CPU="-mcpu=cortex-m7 -mthumb -mfloat-abi=hard -mfpu=fpv5-d16 -Os -fno-tree-loop-distribute-patterns -DPLATFORM_DEVICE=1 -ffunction-sections -fdata-sections"
 INC="-I$EADK/include -I$SRC/shared -I$SRC/shared/ion/src/device"
-# shellcheck disable=SC2086
-arm-none-eabi-gcc $CPU $INC -c "$EADK/src/platform.c" -o "$TMP/platform.o"
-# shellcheck disable=SC2086
-arm-none-eabi-gcc $CPU $INC -std=c++20 -fno-exceptions -fno-rtti -c "$EADK/src/svc.cpp" -o "$TMP/svc.o"
-# shellcheck disable=SC2086
-arm-none-eabi-gcc $CPU $INC -std=c++20 -fno-exceptions -fno-rtti -c "$EADK/src/trampoline.cpp" -o "$TMP/trampoline.o"
-arm-none-eabi-ld -r "$TMP/platform.o" "$TMP/svc.o" "$TMP/trampoline.o" -o "$OUT/numworks/eadk/eadk.o"
+rm -f "$OUT/numworks/eadk/eadk.o"
+for FAMILY in m7h m7f; do
+  FPU=fpv5-d16; [ "$FAMILY" = m7f ] && FPU=fpv5-sp-d16
+  CPU="-mcpu=cortex-m7 -mthumb -mfloat-abi=hard -mfpu=$FPU -Os -fno-tree-loop-distribute-patterns -DPLATFORM_DEVICE=1 -ffunction-sections -fdata-sections"
+  # shellcheck disable=SC2086
+  arm-none-eabi-gcc $CPU $INC -c "$EADK/src/platform.c" -o "$TMP/platform.o"
+  # shellcheck disable=SC2086
+  arm-none-eabi-gcc $CPU $INC -std=c++20 -fno-exceptions -fno-rtti -c "$EADK/src/svc.cpp" -o "$TMP/svc.o"
+  # shellcheck disable=SC2086
+  arm-none-eabi-gcc $CPU $INC -std=c++20 -fno-exceptions -fno-rtti -c "$EADK/src/trampoline.cpp" -o "$TMP/trampoline.o"
+  arm-none-eabi-ld -r "$TMP/platform.o" "$TMP/svc.o" "$TMP/trampoline.o" -o "$OUT/numworks/eadk/eadk.$FAMILY.o"
+done
 cp "$EADK/src/linker.ld" "$OUT/numworks/eadk/linker.ld"
 rm -rf "$TMP"
 
 say "5/5  Jeux"
-rm -f "$OUT/firmware/games.bin" "$OUT/firmware/games.json"
+rm -f "$OUT"/firmware/games*.bin "$OUT/firmware/games.json"
 shopt -s nullglob
 GAMES=("$ROOT"/games/*.nwa)
 if [ ${#GAMES[@]} -gt 0 ]; then
@@ -97,8 +106,11 @@ if [ ${#GAMES[@]} -gt 0 ]; then
 fi
 INSTALLED=("$OUT"/games/*.nwa)
 if [ ${#INSTALLED[@]} -gt 0 ]; then
-  "$VENV/bin/python3" "$OUT/link_games.py" "$OUT/firmware/wiiu-os.B.elf" \
-    "$OUT/games" "$OUT/firmware/games.bin"
+  for MODEL in $MODELS; do
+    echo "   - jeux pour la $MODEL"
+    "$VENV/bin/python3" "$OUT/link_games.py" "$OUT/firmware/wiiu-os.$MODEL.B.elf" \
+      "$OUT/games" "$OUT/firmware/games.$MODEL.bin"
+  done
   "$VENV/bin/python3" - "$OUT" <<'PY'
 import hashlib, json, sys
 from pathlib import Path

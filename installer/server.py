@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Wii U-OS installer: a small local web server to install Wii U-OS and its
-games on a NumWorks n0120 with one click, from a Mac or a Windows PC.
+games on a NumWorks n0110, n0115 or n0120 with one click, from a Mac or a Windows PC.
 
 Only listens on 127.0.0.1. Never writes anything outside of slot B: before
 flashing, it checks that slot B is the inactive slot (i.e. that the
@@ -43,10 +43,25 @@ FROZEN = getattr(sys, "frozen", False)  # the Windows .exe (PyInstaller)
 HERE = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
 DFU_LAUNCH = HERE / "dfu_launch.py"  # NumWorks' dfu.py, with libusb found
 LINK_GAMES = HERE / "link_games.py"
-FIRMWARE_DFU = HERE / "firmware" / f"{FIRMWARE_NAME}.B.dfu"
-FIRMWARE_ELF = HERE / "firmware" / f"{FIRMWARE_NAME}.B.elf"
-PREBUILT_GAMES = HERE / "firmware" / "games.bin"
+# One firmware per calculator model (built by scripts/build-firmware.sh)
+MODELS = ("n0120", "n0115", "n0110")
 PREBUILT_LIST = HERE / "firmware" / "games.json"
+
+
+def firmware_dfu(model):
+    return HERE / "firmware" / f"{FIRMWARE_NAME}.{model}.B.dfu"
+
+
+def firmware_elf(model):
+    return HERE / "firmware" / f"{FIRMWARE_NAME}.{model}.B.elf"
+
+
+def prebuilt_games(model):
+    return HERE / "firmware" / f"games.{model}.bin"
+
+
+def available_models():
+    return [m for m in MODELS if firmware_dfu(m).exists() and firmware_elf(m).exists()]
 GAMES_DIR = HERE / "games"
 PAGE = HERE / "index.html"
 
@@ -74,11 +89,11 @@ SLOT_B_END = 0x90800000
 MAX_UPLOAD = 4 * 1024 * 1024
 
 
-def apps_area():
+def apps_area(model="n0120"):
     """(start, end) of the external apps area of the built firmware: it
     starts right after the userland, so it moves when the userland grows."""
     import link_games
-    sym = link_games.symbols(FIRMWARE_ELF)
+    sym = link_games.symbols(firmware_elf(model))
     start = sym["_external_apps_flash_start"]
     end = sym["_external_apps_flash_end"]
     # Never write outside of slot B
@@ -193,10 +208,10 @@ def games_fingerprint():
                   for p in GAMES_DIR.glob("*.nwa"))
 
 
-def prebuilt_matches():
-    """True if games.bin was built (by the GitHub workflow) for exactly the
-    games that are in games/ now."""
-    if not PREBUILT_GAMES.exists() or not PREBUILT_LIST.exists():
+def prebuilt_matches(model="n0120"):
+    """True if games.<model>.bin was built (by the GitHub workflow) for
+    exactly the games that are in games/ now."""
+    if not prebuilt_games(model).exists() or not PREBUILT_LIST.exists():
         return False
     try:
         listed = json.loads(PREBUILT_LIST.read_text(encoding="utf-8"))
@@ -265,17 +280,17 @@ class Job:
 JOB = Job()
 
 
-def prepare_games(image):
+def prepare_games(image, model):
     """Writes the games image to `image`. Returns an error message or None."""
     games = list(GAMES_DIR.glob("*.nwa"))
-    if games and prebuilt_matches():
-        shutil.copyfile(PREBUILT_GAMES, image)
+    if games and prebuilt_matches(model):
+        shutil.copyfile(prebuilt_games(model), image)
         JOB.write(f"Jeux déjà préparés ({len(games)}) : pas besoin du compilateur ARM.")
         return None
     if games and not have_toolchain():
         return ("Pour ajouter de nouveaux jeux, installe la chaîne ARM "
                 "(Arm GNU Toolchain, arm-none-eabi) ou retire les jeux ajoutés.")
-    code, out = run(link_games_cmd(str(FIRMWARE_ELF), str(GAMES_DIR), image))
+    code, out = run(link_games_cmd(str(firmware_elf(model)), str(GAMES_DIR), image))
     JOB.write("\n".join(l for l in out.splitlines() if "RWX" not in l))
     if code != 0:
         return "Impossible de préparer les jeux (voir le journal)."
@@ -290,22 +305,24 @@ def install():
             return JOB.fail("Calculatrice introuvable. Branche-la en USB, "
                             "appuie sur Reset (au dos) et attends le menu officiel.")
         JOB.write(f"Modèle: {status['model']}, slot inactif: {status['inactiveSlot']}")
-        if status["model"] != "n0120":
-            return JOB.fail(f"Modèle {status['model']} non supporté ({OS_NAME} est fait pour la n0120).")
+        model = status["model"]
+        if model not in MODELS:
+            return JOB.fail(f"Modèle {model} non supporté ({OS_NAME} est fait pour les "
+                            "NumWorks n0110, n0115 et n0120).")
         if status["inactiveSlot"] != "B":
             return JOB.fail("La calculatrice tourne sur le slot B. Appuie sur Reset au dos "
                             "pour revenir sur le système officiel (slot A), puis réessaie.")
-        if not FIRMWARE_DFU.exists() or not FIRMWARE_ELF.exists():
-            return JOB.fail(f"Firmware {OS_NAME} introuvable dans firmware/ : "
+        if model not in available_models():
+            return JOB.fail(f"Firmware {OS_NAME} pour la {model} introuvable dans firmware/ : "
                             "compile-le d'abord (voir le README).")
 
         JOB.step("Préparation des jeux")
         with tempfile.TemporaryDirectory() as tmp:
             image = os.path.join(tmp, "games.bin")
-            error = prepare_games(image)
+            error = prepare_games(image, model)
             if error:
                 return JOB.fail(error)
-            apps_start, apps_end = apps_area()
+            apps_start, apps_end = apps_area(model)
             size = os.path.getsize(image)
             if size > apps_end - apps_start:
                 return JOB.fail("Trop de jeux : ils ne tiennent pas dans le slot B.")
@@ -340,7 +357,7 @@ def install():
         JOB.step(f"Installation de {OS_NAME} (slot B)")
         if dfu_query("--inactive_slot") != "B":
             return JOB.fail("Le slot B n'est plus le slot inactif, installation annulée.")
-        code, out = dfu("-s", f"{hex(USERLAND_B)}:leave", "-D", str(FIRMWARE_DFU))
+        code, out = dfu("-s", f"{hex(USERLAND_B)}:leave", "-D", str(firmware_dfu(model)))
         JOB.write(out)
         if code != 0:
             return JOB.fail(f"Échec de l'écriture de {OS_NAME}.")
@@ -400,12 +417,14 @@ class Handler(BaseHTTPRequestHandler):
             busy = JOB.snapshot()["running"]
             calc = {"connected": None} if busy else calculator_status()
             try:
-                start, end = apps_area()
+                model = calc.get("model") if calc.get("model") in available_models() else "n0120"
+                start, end = apps_area(model)
                 capacity = end - start
             except Exception:
                 capacity = 0x260000
             self.send_json({"calculator": calc, "games": list_games(),
-                            "firmware": FIRMWARE_DFU.exists(),
+                            "firmware": bool(available_models()),
+                            "models": available_models(),
                             "appsCapacity": capacity,
                             "platform": "windows" if WINDOWS else "mac"})
         elif self.path == "/api/job":
@@ -457,7 +476,7 @@ class Server(ThreadingHTTPServer):
 
 def open_server(first_port):
     """The first free port from first_port (8765 / 8766 / 8767 are PSP-OS,
-    Switch-OS, Wii U-OS and Wii U-OS: each installer can run next to the others)."""
+    Switch-OS, Mint-OS and Wii U-OS: each installer can run next to the others)."""
     for port in range(first_port, first_port + 20):
         try:
             return Server(("127.0.0.1", port), Handler), port
@@ -474,7 +493,7 @@ def self_test():
     import dfu_launch
 
     problems = []
-    for path in (FIRMWARE_DFU, FIRMWARE_ELF, PAGE):
+    for path in [p for m in MODELS for p in (firmware_dfu(m), firmware_elf(m))] + [PAGE]:
         print(("ok  " if path.exists() else "MANQUE  ") + str(path.relative_to(HERE)))
         if not path.exists():
             problems.append(str(path))
@@ -489,12 +508,13 @@ def self_test():
         print("USB ok, appareils NumWorks/STM :", len(devices))
     except Exception as e:
         print("USB indisponible ici :", type(e).__name__, e)
-    start, end = apps_area()
-    print(f"Zone des jeux : {start:#x}..{end:#x}")
     games = list(GAMES_DIR.glob("*.nwa"))
-    print("Jeux :", len(games), "| préparés :", prebuilt_matches() if games else "-")
-    if games and not prebuilt_matches():
-        problems.append("games.bin ne correspond pas aux jeux")
+    for model in available_models():
+        start, end = apps_area(model)
+        print(f"{model} : zone des jeux {start:#x}..{end:#x}, jeux préparés :",
+              prebuilt_matches(model) if games else "-")
+        if games and not prebuilt_matches(model):
+            problems.append(f"games.{model}.bin ne correspond pas aux jeux")
     code, out = dfu("--list", timeout=60)
     print("dfu.py --list (processus séparé) :", code, out.strip()[-300:])
     if any(word in out for word in ("ModuleNotFoundError", "ImportError", "No module named",

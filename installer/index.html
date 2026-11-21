@@ -121,7 +121,7 @@
     <div class="logo" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
     <div>
       <h1>Wii U-OS</h1>
-      <div class="sub">Installateur pour NumWorks n0120 · slot B</div>
+      <div class="sub">Installateur pour NumWorks n0110, n0115 et n0120 · slot B</div>
     </div>
   </div>
   <div class="status"><span class="dot" id="calcDot"></span><span id="calcText">Recherche…</span></div>
@@ -157,6 +157,8 @@
 </div>
 
 <script>
+const MODELS_OK_ALL = ["n0110", "n0115", "n0120"];
+let MODELS_OK = MODELS_OK_ALL;
 const $ = (id) => document.getElementById(id);
 const SECTOR = 0x10000;
 let state = { calculator: { connected: null }, games: [], appsCapacity: 0, firmware: true };
@@ -174,14 +176,14 @@ function renderCalc() {
   dot.className = "dot";
   if (installing || c.connected === null) { text.textContent = installing ? "Installation…" : "Recherche…"; return; }
   if (!c.connected) { dot.classList.add("err"); text.textContent = "Calculatrice non détectée"; }
-  else if (c.model !== "n0120") { dot.classList.add("err"); text.textContent = `Modèle ${c.model} non supporté`; }
+  else if (!MODELS_OK.includes(c.model)) { dot.classList.add("err"); text.textContent = `Modèle ${c.model} non supporté`; }
   else if (c.inactiveSlot !== "B") { dot.classList.add("warn"); text.textContent = "Sur le slot B : appuie sur Reset"; }
-  else { dot.classList.add("ok"); text.textContent = "n0120 prête"; }
+  else { dot.classList.add("ok"); text.textContent = `${c.model} prête`; }
 }
 
 function canInstall() {
   const c = state.calculator;
-  return !installing && state.firmware && c.connected && c.model === "n0120" && c.inactiveSlot === "B";
+  return !installing && state.firmware && c.connected && MODELS_OK.includes(c.model) && c.inactiveSlot === "B";
 }
 
 function renderGames() {
@@ -233,6 +235,7 @@ async function refresh() {
   try {
     const r = await fetch("/api/status");
     state = await r.json();
+    if (state && Array.isArray(state.models)) MODELS_OK = state.models;
   } catch { state.calculator = { connected: false }; }
   render();
 }

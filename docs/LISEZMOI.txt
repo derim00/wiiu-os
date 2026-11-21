@@ -1,4 +1,4 @@
-Wii U-OS : installateur pour NumWorks n0120 (Mac)
+Wii U-OS : installateur pour NumWorks n0110, n0115 et n0120 (Mac)
 ===================================================
 
 1. Une seule fois, dans le Terminal (avec Homebrew, https://brew.sh) :

@@ -1,4 +1,4 @@
-Wii U-OS : installateur pour NumWorks n0120 (PC Windows)
+Wii U-OS : installateur pour NumWorks n0110, n0115 et n0120 (PC Windows)
 ==========================================================
 
 Rien à installer : ni Python, ni pilote. Windows reconnaît la calculatrice

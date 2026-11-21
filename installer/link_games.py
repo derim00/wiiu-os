@@ -17,6 +17,7 @@ Needs arm-none-eabi-gcc only when there is at least one game.
 import argparse
 import glob
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -28,9 +29,25 @@ import sys
 # Next to the .exe in the Windows installer (PyInstaller), else next to this file
 HERE = (Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
         else Path(__file__).resolve().parent)
-SECTOR = 0x10000  # Config::ExternalAppsSectorUnit on n0120
-TRAMPOLINE = 0x0807FC00  # TrampolineOrigin (bootloader, internal flash)
-CPU = ["-mcpu=cortex-m7", "-mthumb", "-mfloat-abi=hard", "-mfpu=fpv5-d16"]
+SECTOR = 0x10000  # Config::ExternalAppsSectorUnit (n0110, n0115, n0120)
+# Trampoline of the n0120, when the firmware has no TrampolineOrigin symbol
+TRAMPOLINE = 0x0807FC00
+
+
+def cpu_for(ram_start):
+    """Compiler flags of the calculator: the n0120 (STM32H7, RAM at
+    0x24000000) has a double precision FPU, the n0110 and n0115 (STM32F7,
+    RAM at 0x20000000) a single precision one."""
+    fpu = "fpv5-d16" if ram_start >= 0x24000000 else "fpv5-sp-d16"
+    return ["-mcpu=cortex-m7", "-mthumb", "-mfloat-abi=hard", f"-mfpu={fpu}"]
+
+
+def eadk_object(eadk_dir, ram_start):
+    """The EADK runtime built for this calculator (eadk.m7h.o for the n0120,
+    eadk.m7f.o for the n0110 and n0115; eadk.o in older installers)."""
+    family = "m7h" if ram_start >= 0x24000000 else "m7f"
+    path = os.path.join(eadk_dir, f"eadk.{family}.o")
+    return path if os.path.exists(path) else os.path.join(eadk_dir, "eadk.o")
 
 
 def tool(name):
@@ -79,12 +96,13 @@ def symbols(elf):
     return table
 
 
-def linker_script(template, flash_start, flash_length, ram_start, ram_length):
+def linker_script(template, flash_start, flash_length, ram_start, ram_length,
+                  trampoline=TRAMPOLINE):
     ld = (template.replace("{{ flashStart }}", hex(flash_start))
                   .replace("{{ flashLength }}", hex(flash_length))
                   .replace("{{ ramStart }}", hex(ram_start))
                   .replace("{{ ramLength }}", hex(ram_length))
-                  .replace("{{ trampolineStart }}", hex(TRAMPOLINE)))
+                  .replace("{{ trampolineStart }}", hex(trampoline)))
     # The app size in the header must cover the .data initial values stored
     # in flash after .rodata, otherwise the next app could overlap them.
     ld = ld.replace("    _eadk_app_end = .;\n", "")
@@ -104,28 +122,46 @@ def main(argv=None):
 
     games = sorted(Path(args.games_dir).glob("*.nwa"), key=lambda p: p.name.lower())
     image = bytearray()
+    skipped = []
     if games:
         sym = symbols(args.userland_elf)
         area_start = sym["_external_apps_flash_start"]
         area_end = sym["_external_apps_flash_end"]
         ram_start = (sym["_external_apps_RAM_start"] + 7) & ~7
         ram_end = sym["_external_apps_RAM_end"]
-        eadk_obj = os.path.join(args.eadk, "eadk.o")
+        trampoline = sym.get("TrampolineOrigin", TRAMPOLINE)
+        cpu = cpu_for(ram_start)
+        eadk_obj = eadk_object(args.eadk, ram_start)
         template = Path(args.eadk, "linker.ld").read_text(encoding="utf-8")
         with tempfile.TemporaryDirectory() as tmp:
             for game in games:
                 address = area_start + len(image)
+                # One erased sector must stay free after the last game
+                room = area_end - SECTOR - address
                 ld_path = os.path.join(tmp, "app.ld")
                 Path(ld_path).write_text(linker_script(
-                    template, address, area_end - address, ram_start,
-                    ram_end - ram_start), encoding="utf-8")
+                    template, address, max(room, 0), ram_start,
+                    ram_end - ram_start, trampoline), encoding="utf-8")
                 elf = os.path.join(tmp, "app.elf")
                 binary = os.path.join(tmp, "app.bin")
-                subprocess.run([tool("arm-none-eabi-gcc"), *CPU, "-nostartfiles",
-                                "-nostdlib", "-T", ld_path, "-Wl,--gc-sections",
-                                "-Wl,-e,_start", "-Wl,--no-warn-rwx-segments",
-                                str(game), eadk_obj, "-lgcc", "-lc", "-lgcc", "-o", elf],
-                               check=True)
+                linked = subprocess.run(
+                    [tool("arm-none-eabi-gcc"), *cpu, "-nostartfiles",
+                     "-nostdlib", "-T", ld_path, "-Wl,--gc-sections",
+                     "-Wl,-e,_start", "-Wl,--no-warn-rwx-segments",
+                     str(game), eadk_obj, "-lgcc", "-lc", "-lgcc", "-o", elf],
+                    capture_output=True, text=True)
+                if linked.returncode != 0:
+                    output = linked.stdout + linked.stderr
+                    big = re.search(r"overflowed by (\d+) bytes", output)
+                    if big:
+                        why = (f"trop gros : il manque {int(big.group(1)) / 1e6:.1f} Mo "
+                               f"(place libre : {max(room, 0) / 1e6:.1f} Mo)")
+                    else:
+                        why = "incompatible avec cette calculatrice"
+                        print(output.strip()[-600:])
+                    print(f"!! {game.name} ignoré : {why}. Retire-le du dossier games/.")
+                    skipped.append(game.name)
+                    continue
                 subprocess.run([tool("arm-none-eabi-objcopy"), "-O", "binary",
                                 elf, binary], check=True)
                 data = Path(binary).read_bytes()
@@ -135,11 +171,13 @@ def main(argv=None):
                 padded = (len(data) + SECTOR - 1) // SECTOR * SECTOR
                 image += data + b"\xff" * (padded - len(data))
                 print(f"{game.name:28s} @ {address:#x}  {len(data):7d} octets")
-        assert area_start + len(image) + SECTOR <= area_end, "Trop de jeux"
     # One erased sector after the last app ends the app list
     image += b"\xff" * SECTOR
     Path(args.out_bin).write_bytes(image)
-    print(f"Image des jeux : {len(image)} octets, {len(games)} jeu(x)")
+    print(f"Image des jeux : {len(image)} octets, "
+          f"{len(games) - len(skipped)} jeu(x) sur {len(games)}")
+    if skipped:
+        print("Jeux ignorés : " + ", ".join(skipped))
 
 
 if __name__ == "__main__":

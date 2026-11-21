@@ -1,6 +1,6 @@
 # Wii U-OS : le menu Wii U sur NumWorks
 
-**Wii U-OS remplace l'écran d'accueil de la calculatrice NumWorks (n0120) par
+**Wii U-OS remplace l'écran d'accueil de la calculatrice NumWorks (n0110, n0115 ou n0120) par
 un menu inspiré du menu Wii U** : des tuiles blanches brillantes sur
 plusieurs pages, ton Mii en haut à gauche, la barre du bas (Miiverse, amis,
 boutique, navigateur, notifications, téléchargements, bouton TV)… et
@@ -112,7 +112,7 @@ NumWorks, dans ton compte GitHub ou sur ton Mac.
    privée (*Add file* > *Upload files*). Ils seront préparés et inclus dans
    l'installateur.
 3. Dans ta copie : onglet **Actions** > **Build Wii U-OS** > **Run workflow**.
-4. Environ 15 minutes plus tard, en bas de la page de la compilation,
+4. Environ 30 minutes plus tard (un firmware par modèle), en bas de la page de la compilation,
    télécharge **WiiU-OS-Mac** ou **WiiU-OS-Windows** et décompresse-le
    (deux fois pour la version Mac : GitHub met le zip dans un zip).
 
@@ -158,8 +158,16 @@ modifié.
 
 ## À savoir
 
-- **Calculatrice** : NumWorks **n0120**, logiciel officiel **26.4.0** dans
+- **Calculatrice** : NumWorks **n0110**, **n0115** ou **n0120**, logiciel officiel **26.4.0** dans
   le slot A.
+- **Trois modèles** : la compilation produit un firmware par modèle
+  (n0110, n0115, n0120) et l'installateur choisit tout seul celui de la
+  calculatrice branchée. Mets d'abord ta calculatrice à jour sur
+  numworks.com : le système doit avoir la même version que le logiciel
+  officiel du slot A.
+- **Jeux trop gros** : un jeu qui ne tient pas dans le slot B (NumPlay,
+  par exemple) est ignoré avec un message, au lieu de faire échouer la
+  compilation. Retire-le du dossier `games/`.
 - **Un seul système dans le slot B** : Wii U-OS remplace Mint-OS,
   Windows-OS, Switch-OS, PSP-OS… (et inversement). Les installateurs peuvent
   tourner en même temps (Wii U-OS utilise le port 8774).

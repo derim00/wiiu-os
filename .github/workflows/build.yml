@@ -1,4 +1,4 @@
-# Builds YOUR Wii U-OS (a Wii U menu style userland for the NumWorks n0120)
+# Builds YOUR Wii U-OS (a Wii U menu style userland for the NumWorks n0110, n0115 and n0120)
 # with its one-click installers for Mac and for Windows (a .exe, nothing to
 # install on the PC).
 #
@@ -10,7 +10,7 @@
 # Games: put .nwa files in the games/ folder of your private copy, they are
 # pre-linked for slot B and shipped with both installers.
 #
-# Actions tab -> "Build Wii U-OS" -> Run workflow. About 15 minutes, then
+# Actions tab -> "Build Wii U-OS" -> Run workflow. About 30 minutes (one firmware per model), then
 # download WiiU-OS-Mac or WiiU-OS-Windows at the bottom of the run's
 # page.
 name: Build Wii U-OS
