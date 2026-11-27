@@ -7,7 +7,7 @@ index 1d61e14f13..923207081d 100644
  PATH_haussmann := ../haussmann
  APP_NAME := Epsilon
 -APP_VERSION := 26.1.0
-+APP_VERSION := 26.4.0
++APP_VERSION := 26.4.1
  OUTPUT_ROOT := output
  DEBUG ?= 0
  PLATFORM ?= host

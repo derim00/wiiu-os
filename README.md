@@ -158,7 +158,7 @@ modifié.
 
 ## À savoir
 
-- **Calculatrice** : NumWorks **n0110**, **n0115** ou **n0120**, logiciel officiel **26.4.0** dans
+- **Calculatrice** : NumWorks **n0110**, **n0115** ou **n0120**, logiciel officiel **26.4.1** dans
   le slot A.
 - **Trois modèles** : la compilation produit un firmware par modèle
   (n0110, n0115, n0120) et l'installateur choisit tout seul celui de la

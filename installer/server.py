@@ -31,6 +31,7 @@ import sys
 import tempfile
 import threading
 import webbrowser
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote
@@ -297,6 +298,60 @@ def prepare_games(image, model):
     return None
 
 
+# The kernel of slot A only starts a userland that expects its own version
+# (8 bytes in the userland header). The installer reads the official version
+# on the calculator and writes it in a copy of the firmware: no rebuild needed
+# when NumWorks releases a new version.
+KERNEL_A = 0x90000000  # slot A: the official software
+KERNEL_HEADER_MAGIC = struct.pack("<I", 0xDEC00DF0)
+USERLAND_HEADER_MAGIC = struct.pack("<I", 0xDEC0EDFE)
+
+
+def valid_version(text):
+    parts = text.split(".")
+    return (len(text) <= 7 and len(parts) == 3
+            and all(p.isdigit() and 1 <= len(p) <= 2 for p in parts))
+
+
+def official_version():
+    """Version of the official software (slot A), read from its kernel header.
+    Best effort: None when the calculator refuses to be read."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "kernel.bin")
+        code, _ = dfu("--upload", f"{hex(KERNEL_A)}:2048", path, timeout=30)
+        if code != 0 or not os.path.exists(path):
+            return None
+        data = Path(path).read_bytes()
+    at = data.find(KERNEL_HEADER_MAGIC)
+    if at < 0:
+        return None
+    version = data[at + 4:at + 12].split(b"\0")[0].decode("ascii", "ignore")
+    return version if valid_version(version) else None
+
+
+def adapted_firmware(model):
+    """Path of the firmware to write: the built one, or a copy of it that
+    expects the official version found on the calculator."""
+    built = firmware_dfu(model)
+    data = bytearray(built.read_bytes())
+    at = data.find(USERLAND_HEADER_MAGIC)
+    built_for = data[at + 4:at + 12].split(b"\0")[0].decode("ascii", "ignore") if at >= 0 else ""
+    wanted = official_version()
+    if wanted is None:
+        JOB.write(f"Version officielle illisible : {OS_NAME} est installé tel quel "
+                  f"(prévu pour la {built_for}).")
+        return str(built)
+    JOB.write(f"Système officiel de la calculatrice : {wanted}.")
+    if wanted == built_for or not valid_version(built_for):
+        return str(built)
+    data[at + 4:at + 12] = wanted.encode("ascii").ljust(8, b"\0")
+    data[-4:] = struct.pack("<I", ~zlib.crc32(bytes(data[:-4])) & 0xFFFFFFFF)  # DfuSe CRC
+    path = Path(tempfile.gettempdir()) / built.name
+    path.write_bytes(bytes(data))
+    JOB.write(f"{OS_NAME} adapté à la version {wanted} (compilé pour la {built_for}).")
+    return str(path)
+
+
 def install():
     try:
         JOB.step("Recherche de la calculatrice")
@@ -357,7 +412,8 @@ def install():
         JOB.step(f"Installation de {OS_NAME} (slot B)")
         if dfu_query("--inactive_slot") != "B":
             return JOB.fail("Le slot B n'est plus le slot inactif, installation annulée.")
-        code, out = dfu("-s", f"{hex(USERLAND_B)}:leave", "-D", str(firmware_dfu(model)))
+        firmware = adapted_firmware(model)
+        code, out = dfu("-s", f"{hex(USERLAND_B)}:leave", "-D", firmware)
         JOB.write(out)
         if code != 0:
             return JOB.fail(f"Échec de l'écriture de {OS_NAME}.")
